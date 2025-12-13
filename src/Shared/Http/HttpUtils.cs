@@ -6,8 +6,10 @@ using System.Collections.Specialized;
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Web;
 using System.Xml.Linq;
+using Shared.Config;
 
 public static class HttpUtils
 {
@@ -44,11 +46,10 @@ public static async Task StructuredLogging(HttpListenerRequest req,
             duration
         };
 
-        Console.WriteLine(JsonSerializer.Serialize(record, JsonUtils.DefaultOptions));
+    Console.WriteLine(JsonSerializer.Serialize(record, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
 }
 }
-public static async Task CentralizedErrorHandling(HttpListenerRequest req,
-    HttpListenerResponse res, Hashtable props, Func<Task> next)
+public static async Task CentralizedErrorHandling(HttpListenerRequest req, HttpListenerResponse res, Hashtable props, Func<Task> next)
 {
     try
         {
@@ -80,11 +81,9 @@ catch(Exception e)
 public static async Task ServeStaticFiles(HttpListenerRequest req,
     HttpListenerResponse res, Hashtable props, Func<Task> next)
 {
-    string rootDir = Configuration.Get("root.dir",
-        Directory.GetCurrentDirectory());
-    string urlPath = req.Url.AbsolutePath.TrimStart('/');
-    string filePath = Path.Combine(rootDir, urlPath.Replace('/',
-        Path.DirectorySeparatorChar));
+    string rootDir = Configuration.Get("root.dir", Directory.GetCurrentDirectory())!;
+    string urlPath = req.Url!.AbsolutePath.TrimStart('/');
+        string filePath = Path.Combine(rootDir, urlPath.Replace('/', Path.DirectorySeparatorChar));
 
     if (File.Exists(filePath))
     {
@@ -248,8 +247,7 @@ public static async Task ParseRequestQueryString(HttpListenerRequest req,
     await next();
 }
 
-public static NameValueCollection ParseFormData(string text,
-    string duplicateSeparator = ",")
+public static NameValueCollection ParseFormData(string text, string duplicateSeparator = ",")
 {
     var result = new NameValueCollection();
     var pairs = text.Split('&', StringSplitOptions.RemoveEmptyEntries);
@@ -265,6 +263,7 @@ public static NameValueCollection ParseFormData(string text,
             ? value
             : oldValue + duplicateSeparator + value;
     }
+    return result;
 }
 public static async Task ReadRequestBodyAsForm(HttpListenerRequest req,
     HttpListenerResponse res, Hashtable props, Func<Task> next)
@@ -414,7 +413,58 @@ public static async Task SendResultResponse<T>(
      result.Payload!.ToString()!);
     }
  } 
+
+
+public static async Task SendPagedResultResponse<T>(HttpListenerRequest req, HttpListenerResponse res,Hashtable props,
+    Result<PagedResult<T>> result,int page,int size)
+{
+    if (result.IsError)
+    {
+        res.Headers["Cache-Control"] = "no-store";
+        await HttpUtils.SendResponse(
+            req,
+            res,
+            props,
+            result.StatusCode,
+            result.Error!.ToString()
+        );
+    }
+    else
+    {
+        var pagedResult = result.Payload!;
+        HttpUtils.AddPaginationHeaders(req, res, props, pagedResult, page, size);
+        await HttpUtils.SendResponse(req,res,props, result.StatusCode,result.Payload!.ToString()!);
+    }
+ }
+ public static void AddPaginationHeaders<T>(HttpListenerRequest req, HttpListenerResponse res,Hashtable props,PagedResult<T> pagedResult,int page, int size)
+{
+   var baseUrl = $"{req.Url!.Scheme}://{req.Url.Authority}{req.Url.AbsolutePath}";
+
+int totalPages = Math.Max(1, (int)Math.Ceiling((double)pagedResult.TotalCount / size));
+
+string self = $"{baseUrl}?page={page}&size={size}";
+string? first = page == 1 ? null : $"{baseUrl}?page=1&size={size}";
+string? last = page == totalPages ? null : $"{baseUrl}?page={totalPages}&size={size}";
+string? prev = page > 1 ? $"{baseUrl}?page={page - 1}&size={size}" : null;
+string? next = page < totalPages ? $"{baseUrl}?page={page + 1}&size={size}" : null;
+
+res.Headers["Content-Type"] = "application/json; charset=utf-8";
+res.Headers["X-Total-Count"] = pagedResult.TotalCount.ToString();
+res.Headers["X-Page"] = page.ToString();
+res.Headers["X-Page-Size"] = size.ToString();
+res.Headers["X-Total-Pages"] = totalPages.ToString();
+
+var linkParts = new List<string>();
+if (prev != null) linkParts.Add($"<{prev}>; rel=\"prev\"");
+if (next != null) linkParts.Add($"<{next}>; rel=\"next\"");
+if (first != null) linkParts.Add($"<{first}>; rel=\"first\"");
+if (last != null) linkParts.Add($"<{last}>; rel=\"last\"");
+
+if (linkParts.Count > 0)
+    res.Headers["Link"] = string.Join(", ", linkParts);
 }
+}
+
 
 
 
